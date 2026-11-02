@@ -24,6 +24,9 @@ let recipe = try await session.respond(to: "A quick chickpea dinner", generating
 - **Visible.** Each app shows up by name in Hearth's **Who's using it**, with requests and tokens.
 - **Keeps working without Hearth.** `HearthModel.preferred()` falls back to Apple Intelligence.
 
+Used by [nib](https://github.com/seckinbeduk/nib) (commit messages) and
+[Moniker](https://github.com/seckinbeduk/moniker) (file names).
+
 ## Install
 
 Swift Package Manager:
