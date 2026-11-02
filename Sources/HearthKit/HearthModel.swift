@@ -49,6 +49,22 @@ public struct HearthModel: LanguageModel, Sendable {
         await HearthConnection.discover() != nil
     }
 
+    /// What the running Hearth offers, or nil when it isn't running.
+    public static func status() async -> Status? {
+        guard let connection = await HearthConnection.discover() else { return nil }
+        return Status(version: connection.version, localModel: connection.localModel,
+                      supportsStructuredOutput: connection.supportsStructuredOutput)
+    }
+
+    public struct Status: Sendable, Equatable {
+        /// Hearth's version, e.g. "0.2.0".
+        public let version: String?
+        /// The local model loaded in Hearth, e.g. "mlx-community/Qwen3-8B-4bit". When nil,
+        /// `.local` requests are answered by Apple Intelligence instead.
+        public let localModel: String?
+        public let supportsStructuredOutput: Bool
+    }
+
     /// Hearth when it's running, Apple Intelligence directly otherwise, so an app keeps working either way.
     public static func preferred(_ backend: Backend = .appleIntelligence,
                                  appName: String = ProcessInfo.processInfo.processName) async -> any LanguageModel {
@@ -77,13 +93,17 @@ public struct HearthModel: LanguageModel, Sendable {
             model: HearthModel,
             streamingInto channel: LanguageModelExecutorGenerationChannel
         ) async throws {
-            let connection: HearthConnection
+            let found: HearthConnection?
             if let baseURL = configuration.baseURL {
-                connection = HearthConnection(baseURL: baseURL)
-            } else if let found = await HearthConnection.discover() {
-                connection = found
+                found = await HearthConnection.probe(baseURL)
             } else {
-                throw HearthError.notRunning
+                found = await HearthConnection.discover()
+            }
+            guard let connection = found else { throw HearthError.notRunning }
+            // An older Hearth ignores the schema and answers in prose, which fails to parse later
+            // with a confusing error. Say what's wrong instead.
+            if request.schema != nil, !connection.supportsStructuredOutput {
+                throw HearthError.outdated(connection.version ?? "0.1")
             }
 
             let entryID = UUID().uuidString
@@ -112,7 +132,7 @@ public struct HearthModel: LanguageModel, Sendable {
                 case .usage(let prompt, let completion):
                     usage = (prompt, completion)
                 case .error(let message):
-                    throw HearthError.server(message)
+                    throw HearthError.fromServer(message)
                 case .done, nil:
                     continue
                 }
@@ -127,11 +147,22 @@ public struct HearthModel: LanguageModel, Sendable {
 
 public enum HearthError: Error, LocalizedError, Equatable {
     case notRunning
+    /// The running Hearth is too old for this request (structured output needs 0.2 or later).
+    case outdated(String)
+    /// Apple Intelligence's own safety check failed to run on this Mac. Nothing to do with the request.
+    case appleSafetyCheckFailed
     case server(String)
+
+    /// Hearth relays errors as text; recognize the ones that deserve a clearer explanation.
+    static func fromServer(_ message: String) -> HearthError {
+        message.contains("SensitiveContentAnalysisML") ? .appleSafetyCheckFailed : .server(message)
+    }
 
     public var errorDescription: String? {
         switch self {
         case .notRunning: "Hearth isn't running. Open it from the menu bar, or get it at github.com/seckinbeduk/hearth."
+        case .outdated(let version): "Hearth \(version) can't return structured output. Update to Hearth 0.2 or later: github.com/seckinbeduk/hearth/releases"
+        case .appleSafetyCheckFailed: "Apple Intelligence's safety check couldn't run on this Mac (SensitiveContentAnalysisML). It's a macOS problem, not your request, and calling Apple Intelligence directly fails the same way. Restarting the Mac fixes it."
         case .server(let message): "Hearth: \(message)"
         }
     }

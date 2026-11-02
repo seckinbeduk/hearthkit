@@ -29,12 +29,17 @@ struct Demo {
 
         await run("Apple Intelligence, direct", model: SystemLanguageModel.default)
 
-        guard await HearthModel.isRunning() else {
+        guard let status = await HearthModel.status() else {
             print("Hearth isn't running, so the Hearth rows are skipped. Open Hearth and run this again.")
             return
         }
         await run("Apple Intelligence via Hearth", model: HearthModel(.appleIntelligence, appName: "HearthKit Demo"))
-        await run("Local model via Hearth", model: HearthModel(.local, appName: "HearthKit Demo"))
+        if let local = status.localModel {
+            await run("Local model via Hearth (\(local))", model: HearthModel(.local, appName: "HearthKit Demo"))
+        } else {
+            print("── Local model via Hearth ──")
+            print("– skipped: no local model is loaded in Hearth, so it would answer with Apple Intelligence.\n")
+        }
 
         print("── Streaming through Hearth ──")
         let session = LanguageModelSession(model: HearthModel(.appleIntelligence, appName: "HearthKit Demo"),

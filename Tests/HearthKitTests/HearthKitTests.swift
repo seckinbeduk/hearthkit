@@ -64,6 +64,55 @@ struct BodyTests {
     }
 }
 
+@Suite("Versions and errors")
+struct VersionTests {
+    @Test func versionComparison() {
+        #expect(HearthConnection.isAtLeast("0.2.0", "0.2"))
+        #expect(HearthConnection.isAtLeast("0.10.1", "0.2"))
+        #expect(HearthConnection.isAtLeast("1.0", "0.2"))
+        #expect(!HearthConnection.isAtLeast("0.1.0", "0.2"))
+        #expect(HearthConnection(baseURL: URL(string: "http://x")!, version: nil).supportsStructuredOutput == false)
+    }
+
+    @Test func appleSafetyCheckGetsAClearError() {
+        let raw = "The operation couldn’t be completed. (com.apple.SensitiveContentAnalysisML error 15.)"
+        #expect(HearthError.fromServer(raw) == .appleSafetyCheckFailed)
+        #expect(HearthError.fromServer("No model is running.") == .server("No model is running."))
+    }
+
+    @Test func clearErrorWhenHearthIsNotThere() async {
+        // Nothing listens on port 1.
+        let model = HearthModel(.appleIntelligence, appName: "HearthKit Tests", baseURL: URL(string: "http://127.0.0.1:1")!)
+        let session = LanguageModelSession(model: model, tools: [], instructions: nil)
+        do {
+            _ = try await session.respond(to: "Hi")
+            Issue.record("expected an error")
+        } catch {
+            #expect("\(error)".contains("notRunning") || error.localizedDescription.contains("isn't running"))
+        }
+    }
+}
+
+@Generable
+enum Pace {
+    case relaxed, balanced, packed
+}
+
+@Generable
+struct Stop {
+    @Guide(description: "A place to visit")
+    var place: String
+    var pace: Pace
+}
+
+@Generable
+struct Itinerary {
+    @Guide(description: "The city")
+    var city: String
+    @Guide(.maximumCount(3))
+    var stops: [Stop]
+}
+
 @Suite("Against a running Hearth")
 struct LiveTests {
     @Test func structuredAnswerThroughHearth() async throws {
@@ -74,6 +123,16 @@ struct LiveTests {
                                                generating: Sample.self).content
         #expect(!sample.title.isEmpty)
         #expect(sample.tags.count <= 3)
+    }
+
+    @Test func nestedTypesAndEnumsThroughHearth() async throws {
+        guard await HearthModel.isRunning() else { return }
+        let session = LanguageModelSession(model: HearthModel(.appleIntelligence, appName: "HearthKit Tests"),
+                                           tools: [], instructions: "Plan short city walks.")
+        let plan = try await session.respond(to: "Three stops for an afternoon in Istanbul.", generating: Itinerary.self).content
+        #expect(!plan.city.isEmpty)
+        #expect(!plan.stops.isEmpty && plan.stops.count <= 3)
+        #expect(plan.stops.allSatisfy { !$0.place.isEmpty })
     }
 
     @Test func multiTurnKeepsContext() async throws {

@@ -4,6 +4,28 @@ import FoundationModels
 /// Where Hearth is listening, and the HTTP it speaks.
 struct HearthConnection: Sendable {
     let baseURL: URL
+    /// Hearth's version from `/health`; nil for versions before 0.2, which didn't report one.
+    var version: String? = nil
+    /// The local model Hearth has loaded, or nil when it serves only Apple Intelligence.
+    var localModel: String? = nil
+
+    /// `response_format` (and so `@Generable`) arrived in Hearth 0.2.
+    var supportsStructuredOutput: Bool {
+        guard let version else { return false }
+        return Self.isAtLeast(version, "0.2")
+    }
+
+    /// Compares dotted version numbers: "0.10.1" ≥ "0.2".
+    static func isAtLeast(_ version: String, _ minimum: String) -> Bool {
+        let lhs = version.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
+        let rhs = minimum.split(separator: ".").map { Int($0) ?? 0 }
+        for index in 0..<max(lhs.count, rhs.count) {
+            let a = index < lhs.count ? lhs[index] : 0
+            let b = index < rhs.count ? rhs[index] : 0
+            if a != b { return a > b }
+        }
+        return true
+    }
 
     /// Hearth prefers port 8800 and falls back to one of the next nine when it's taken.
     static func candidatePorts() -> [Int] {
@@ -26,13 +48,26 @@ struct HearthConnection: Sendable {
                   (response as? HTTPURLResponse)?.statusCode == 200,
                   let health = try? JSONDecoder().decode(Health.self, from: data),
                   health.server == "Hearth" else { continue }
-            return HearthConnection(baseURL: base)
+            return HearthConnection(baseURL: base, version: health.version, localModel: health.model)
         }
         return nil
     }
 
+    /// Reads `/health` at a known address, so a fixed `baseURL` gets the version check too.
+    static func probe(_ base: URL) async -> HearthConnection? {
+        var request = URLRequest(url: base.appendingPathComponent("health"))
+        request.timeoutInterval = 2
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let health = try? JSONDecoder().decode(Health.self, from: data),
+              health.server == "Hearth" else { return nil }
+        return HearthConnection(baseURL: base, version: health.version, localModel: health.model)
+    }
+
     struct Health: Decodable {
         let server: String?
+        let version: String?
+        let model: String?
     }
 
     /// The `/v1/chat/completions` body: streamed, with usage, and with the schema when there is one.
@@ -77,7 +112,7 @@ struct HearthConnection: Sendable {
         guard status == 200 else {
             var data = Data()
             for try await byte in bytes { data.append(byte) }
-            throw HearthError.server(SSE.errorMessage(in: data) ?? "request failed (\(status))")
+            throw HearthError.fromServer(SSE.errorMessage(in: data) ?? "request failed (\(status))")
         }
         return bytes.lines
     }
